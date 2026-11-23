@@ -183,7 +183,7 @@ const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 let toastT;const toast=m=>{const t=$('#toast');t.textContent=m;t.classList.add('on');clearTimeout(toastT);toastT=setTimeout(()=>t.classList.remove('on'),2600)};
 
 /* ---------- state ---------- */
-const D={size:2048,lock:1,seam:1,fall:.22,vp:1,hb:.5,dl:.6,drad:5,ct:1,ex:1,sa:1,eq:[.5,.7,.9,1,.9,.7,.5],hct:1,hbi:0,hiv:0,
+const D={size:2048,lock:1,seam:1,smode:0,fall:.22,vp:1,hb:.5,cells:3,srot:.25,ssoft:.35,seed:1,dl:.6,drad:5,ct:1,ex:1,sa:1,eq:[.5,.7,.9,1,.9,.7,.5],hct:1,hbi:0,hiv:0,
  nst:10,nrad:1,rsrc:1,rbase:.65,rct:.8,riv:1,nfmt:'gl',rfmt:'r',h16:1,ea:1,eh:1,en:1,er:1,disp:.08,rep:1,shape:1,anim:1};
 let S=JSON.parse(JSON.stringify(D));
 try{Object.assign(S,JSON.parse(localStorage.getItem('btoolz-mapx')||'{}'))}catch(e){}
@@ -210,6 +210,9 @@ const smp=gl.createSampler();
 gl.samplerParameteri(smp,gl.TEXTURE_MIN_FILTER,gl.LINEAR_MIPMAP_LINEAR);gl.samplerParameteri(smp,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
 gl.samplerParameteri(smp,gl.TEXTURE_WRAP_S,gl.REPEAT);gl.samplerParameteri(smp,gl.TEXTURE_WRAP_T,gl.REPEAT);
 if(ANI)gl.samplerParameterf(smp,ANI.TEXTURE_MAX_ANISOTROPY_EXT,8);
+const smpMir=gl.createSampler();
+gl.samplerParameteri(smpMir,gl.TEXTURE_MIN_FILTER,gl.LINEAR);gl.samplerParameteri(smpMir,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+gl.samplerParameteri(smpMir,gl.TEXTURE_WRAP_S,gl.MIRRORED_REPEAT);gl.samplerParameteri(smpMir,gl.TEXTURE_WRAP_T,gl.MIRRORED_REPEAT);
 const P={
 crop:prog(FH+`uniform sampler2D src;uniform vec4 r;void main(){vec2 s=vec2(r.x+uv.x*r.z,1.-(r.y+(1.-uv.y)*r.w));o=vec4(texture(src,s).rgb,1.);}`),
 copy:prog(FH+`uniform sampler2D t;void main(){o=texture(t,uv);}`),
@@ -217,6 +220,15 @@ seam:prog(FH+`uniform sampler2D t;uniform vec2 dir;uniform float fall,vp,hb;unif
 void main(){float c=dot(uv,dir),d=min(c,1.-c),w=1.-smoothstep(0.,fall,d);
 vec3 a=texture(t,uv).rgb,b=texture(t,uv+dir*.5).rgb;w=clamp(w+(lum(b)-lum(a))*hb*16.*w*(1.-w),0.,1.);vec3 m=mix(a,b,w);
 float k=inversesqrt(max(w*w+(1.-w)*(1.-w),.25));m=mix(m,mean+(m-mean)*k,vp);o=vec4(clamp(m,0.,1.),1.);}`),
+scat:prog(FH+`uniform sampler2D t;uniform vec2 nc;uniform float rot,kk,hb,vp,seed,asp,mg;uniform vec3 mean;
+vec2 h2(vec2 c){c=mod(c,nc);return fract(sin(vec2(dot(c,vec2(127.1,311.7)),dot(c,vec2(269.5,183.3)))+seed)*43758.5453);}
+float h1(vec2 c){c=mod(c,nc);return fract(sin(dot(c,vec2(419.2,371.9))+seed*1.37)*24634.6345);}
+void main(){vec2 P=uv*nc,ci=floor(P);vec3 acc=vec3(0);float ws=0.,w2=0.,ml=lum(mean);
+for(int y=-1;y<=1;y++)for(int x=-1;x<=1;x++){vec2 cj=ci+vec2(x,y),dd=P-(cj+.1+.8*h2(cj));float d=length(dd),a=(h1(cj)-.5)*6.2831853*rot;
+ vec2 off=dd/nc*vec2(asp,1.);off=mat2(cos(a),sin(a),-sin(a),cos(a))*off/vec2(asp,1.);
+ vec2 cs=mg+fract(h2(cj)*7.31+h1(cj)*3.17)*(1.-2.*mg);vec3 s=texture(t,cs+off).rgb;
+ float w=exp(-kk*d+hb*12.*(lum(s)-ml));acc+=s*w;ws+=w;w2+=w*w;}
+vec3 m=acc/ws;float k=inversesqrt(max(w2/(ws*ws),.25));m=mix(m,mean+(m-mean)*k,vp);o=vec4(clamp(m,0.,1.),1.);}`,VS,smpMir),
 blur:prog(FH+`uniform sampler2D t;uniform vec2 st,hp;uniform float sg,cl;
 void main(){vec3 s=vec3(0);float ws=0.;for(int i=-12;i<=12;i++){float x=float(i),w=exp(-x*x/(2.*sg*sg));vec2 q=uv+st*x;q=mix(q,clamp(q,hp,1.-hp),cl);s+=texture(t,q).rgb*w;ws+=w;}o=vec4(s/ws,1.);}`),
 alb:prog(FH+`uniform sampler2D T,B;uniform float dl,al,ct,ex,sa;
@@ -293,7 +305,9 @@ let srcTex=null;
 /* ---------- pipeline stages ---------- */
 function stCrop(c){pass(P.crop,full(c,'base','c',0),{src:srcTex,r:[crop.x,crop.y,crop.w,crop.h]})}
 function stTile(c){const o=full(c,'tiled','c');
- if(S.seam){const sx=full(c,'sx','c',0);pass(P.seam,sx,{t:c.t.base,dir:[1,0],fall:S.fall,vp:S.vp,hb:S.hb,mean});pass(P.seam,o,{t:sx,dir:[0,1],fall:S.fall,vp:S.vp,hb:S.hb,mean})}
+ if(S.seam&&S.smode===1){const asp=c.W/c.H,nx=S.cells,ny=Math.max(1,Math.round(S.cells/asp));
+  pass(P.scat,o,{t:c.t.base,nc:[nx,ny],rot:S.srot,kk:30-27*S.ssoft,hb:S.hb,vp:S.vp,seed:S.seed*1.618,asp,mg:Math.min(.45,.75/Math.min(nx,ny)),mean})}
+ else if(S.seam){const sx=full(c,'sx','c',0);pass(P.seam,sx,{t:c.t.base,dir:[1,0],fall:S.fall,vp:S.vp,hb:S.hb,mean});pass(P.seam,o,{t:sx,dir:[0,1],fall:S.fall,vp:S.vp,hb:S.hb,mean})}
  else pass(P.copy,o,{t:c.t.base});mips(o)}
 function stBlur(c){const k=Math.max(c.W,c.H)/1024,cl=S.seam?0:1;let prev=c.t.tiled,ps=0;
  for(let i=1;i<=7;i++){const s=2**(i-1)*k,d=2**Math.floor(Math.log2(Math.max(1,s/2))),w=Math.max(4,Math.round(c.W/d)),h=Math.max(4,Math.round(c.H/d));
@@ -443,8 +457,13 @@ $('#panel').innerHTML=`
  <div class="field"><span>Output size (long edge)</span><select id="s-size" data-k="size">${[512,1024,2048,4096].filter(v=>v<=MAXT).map(v=>`<option value="${v}">${v} px</option>`).join('')}</select></div>
  <p class="note">Editing previews at up to 1024 px; export renders at full size.</p></section>
 <section data-t="tile"><h2>Tiling</h2><p class="hint">Blends opposite edges so the texture repeats without seams. Check it in the 3×3 view.</p>
- ${tg('seam','Make seamless',1)}${sl('fall','Edge blend width',.04,.5,.01,1)}${sl('hb','Blend by height',0,1,.01,1)}${tg('vp','Keep contrast in blend',1)}
- <p class="note">Blend by height lets raised, brighter detail win in the overlap instead of ghosting. Crop away strong lighting gradients first.</p></section>
+ ${tg('seam','Make seamless',1)}
+ <div id="seamOpts"><div class="field"><span>Method</span>${seg('smode',1,[[0,'Edge blend'],[1,'Scatter']])}</div>
+ <div id="gEdge">${sl('fall','Edge blend width',.04,.5,.01,1)}</div>
+ <div id="gScat">${sl('cells','Patches across',2,10,1,1,v=>v+'')}${sl('srot','Rotation',0,1,.01,1,v=>'±'+Math.round(v*180)+'°')}${sl('ssoft','Edge softness',0,1,.01,1)}
+  <div class="pair" style="grid-template-columns:1fr auto;align-items:center"><span class="note" style="margin:0">Layout <b id="seedN"></b></span><button class="btn" id="bShuf">Shuffle</button></div></div>
+ ${sl('hb','Blend by height',0,1,.01,1)}${tg('vp','Keep contrast in blend',1)}</div>
+ <p class="note" id="seamNote"></p></section>
 <section data-t="albedo"><h2>Albedo</h2><p class="hint">Base colour with baked light and shadow flattened out.</p>
  ${sl('dl','Remove lighting',0,1,.01,3)}${sl('drad','Lighting scale',3,7,1,3,v=>['','','','Small','Medium','Large','Larger','Largest'][v])}
  ${sl('ct','Contrast',.4,1.6,.01,3)}${sl('ex','Brightness',.5,1.5,.01,3)}${sl('sa','Saturation',0,1.6,.01,3)}</section>
@@ -470,6 +489,8 @@ $('#panel').innerHTML=`
 const panel=$('#panel');
 function sync(){panel.querySelectorAll('input[data-k]').forEach(el=>{const k=el.dataset.k;if(el.type==='checkbox')el.checked=!!S[k];else{el.value=S[k];const o=$('#o-'+k);if(o)o.textContent=FMT[k](S[k])}});
  document.querySelectorAll('.seg[data-k]').forEach(s=>s.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.v==String(S[s.dataset.k])))));
+ $('#gEdge').hidden=S.smode===1;$('#gScat').hidden=S.smode!==1;$('#seamOpts').hidden=!S.seam;$('#seedN').textContent='#'+S.seed;
+ $('#seamNote').textContent=!S.seam?'':S.smode===1?'Scatter rebuilds the tile from randomly placed, rotated patches with soft Voronoi edges: no seam cross, no obvious repeat. Lower Rotation if the photo has strong directional light.':'Blend by height lets raised, brighter detail win in the overlap instead of ghosting. Crop away strong lighting gradients first.';
  $('#s-size').value=S.size;$('#s-size2').value=S.size;$('#s-name').value=name;$('#nfmtN').textContent=S.nfmt==='gl'?'OpenGL, ready for Blender':'DirectX, flip green for Blender';
  document.querySelectorAll('.eqc').forEach((c,i)=>{c.firstChild.style.height=S.eq[i]/1.5*100+'%';c.setAttribute('aria-valuenow',S.eq[i].toFixed(2))});
  $('#s3d').value=S.disp;$('#o3d').textContent=S.disp.toFixed(2);$('#s3t').value=S.rep;$('#o3t').textContent=S.rep+'×';$('#c3l').checked=!!S.anim;
@@ -484,6 +505,7 @@ panel.addEventListener('click',e=>{const b=e.target.closest('.seg[data-k] button
  const one=e.target.closest('[data-one]');if(one){e.preventDefault();exportMaps([one.dataset.one]);return}});
 const sizeChange=e=>{S.size=+e.target.value;after(0)};$('#s-size').onchange=sizeChange;$('#s-size2').onchange=sizeChange;
 $('#s-name').oninput=e=>{name=e.target.value.replace(/[^\w\-]+/g,'_')||'material'};
+$('#bShuf').onclick=()=>{S.seed=S.seed%999+1;after(1)};
 $('#bSq').onclick=()=>{squareCrop();drawCrop();inval(0)};$('#bFull').onclick=()=>{S.lock=0;crop={x:0,y:0,w:1,h:1};after(0)};
 const eq=$('#eq');let eqOn=false;
 const eqSet=e=>{const r=eq.getBoundingClientRect(),i=clamp(Math.floor((e.clientX-r.left-8)/(r.width-16)*7),0,6);S.eq[i]=Math.round(clamp((r.bottom-8-e.clientY)/(r.height-16),0,1)*1.5*100)/100;sync();inval(4)};
